@@ -1,0 +1,15 @@
+# requirements.txt — GTFS Explorer (CPU baseline)
+# Core
+streamlit>=1.32
+numpy>=1.26
+pandas>=2.1
+pydeck>=0.8
+tqdm>=4.66
+joblib>=1.3
+
+# Optional extras
+# GeoJSON trimming (enable drawing/filtering by polygons)
+shapely>=2.0
+# GPU acceleration (pick the right one for your system; leave commented if not needed)
+# For NVIDIA CUDA 12.x: cupy-cuda12x
+# For Apple Silicon (Metal/MPS): torch>=2.1
