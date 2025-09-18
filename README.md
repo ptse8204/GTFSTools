@@ -18,6 +18,6 @@ More improvements and features will be added in the future.
 
 Here is a screenshot of a result of a run, which show an optimal transit run in Vancouver's Skytrain.
 
-![](screenshots/Screenshot 2025-09-18 at 14.46.42.png?raw=true)
+![](<screenshots/Screenshot 2025-09-18 at 14.46.42.png>)
 
 The current leaderboard time is 2hrs and 44 mins. As shown here: https://www.transitruns.org/vancouver/
