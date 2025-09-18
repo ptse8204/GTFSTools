@@ -14,6 +14,8 @@ To use this code, run the following code:
 streamlit run gtfs_explorer_stable_v1.0.1.py
 ```
 
+The code also requires the use of GTFS files, which you may download from: https://www.transit.land/feeds?search
+
 More improvements and features will be added in the future.
 
 ## An example run
