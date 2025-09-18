@@ -17,6 +17,6 @@ streamlit run gtfs_explorer_stable_v1.0.1.py
 More improvements and features will be added in the future.
 
 Here is a screenshot of a result of a run, which show an optimal transit run in Vancouver's Skytrain.
-![screenshot](screenshots/Screenshot 2025-09-18 at 14.46.42.png)
+![screenshot](screenshots/Screenshot 2025-09-18 at 14.46.42.png?raw=true)
 
 The current leaderboard time is 2hrs and 44 mins. As shown here: https://www.transitruns.org/vancouver/
