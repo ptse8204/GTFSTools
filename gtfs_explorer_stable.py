@@ -38,6 +38,12 @@ import pydeck as pdk
 
 # Map style resolver (ensures we pass a valid Mapbox style URL to pydeck)
 def _resolve_map_style(style_key):
+    # If already a full style URL (Carto, OSM, Mapbox), pass through
+    try:
+        if isinstance(style_key, str) and (style_key.startswith("http") or style_key.startswith("mapbox://")):
+            return style_key
+    except Exception:
+        pass
     # Try user-provided MAP_STYLES dict first
     try:
         styles = globals().get("MAP_STYLES", {})
@@ -45,7 +51,7 @@ def _resolve_map_style(style_key):
             return styles[style_key]
     except Exception:
         pass
-    # Friendly defaults
+    # Friendly defaults (Mapbox) — will require a token
     defaults = {
         "Light": "mapbox://styles/mapbox/light-v11",
         "Dark": "mapbox://styles/mapbox/dark-v11",
@@ -2084,26 +2090,52 @@ with tab_sched:
                 for origin_id, sub in chosen.groupby("stop_id_first"):
                     oname = sub.iloc[0]["first_name"]
                     st.markdown(f"**Departures from {oname}**")
-                    tids = sub["trip_id"].tolist()
-                    dep_rows = gtfs.stop_times[gtfs.stop_times["trip_id"].isin(tids) & (gtfs.stop_times["stop_id"].astype(str)==str(origin_id))][["trip_id","departure_time"]].copy()
-                    dep_rows = dep_rows.merge(chosen[["trip_id","trip_headsign"]], on="trip_id", how="left").sort_values("departure_time")
-                    # build hour -> list of minutes
-                    by_hour = {}
-                    for t in dep_rows["departure_time"].dropna().tolist():
-                        try:
-                            hh,mm,_ = t.split(":")
-                            by_hour.setdefault(hh, []).append(mm)
-                        except Exception:
-                            pass
-                    if by_hour:
-                        # show a table instead of code pad
-                        import pandas as _pd
-                        data = [{"Hour": hh, "Minutes": ", ".join(sorted(set(by_hour[hh])))} for hh in sorted(by_hour.keys())]
-                        st.dataframe(_pd.DataFrame(data), use_container_width=True, hide_index=True)
-                    # tabular view for reference
-                    dep_rows = dep_rows.rename(columns={"departure_time":"Departure","trip_headsign":"Headsign"})
-                    st.dataframe(dep_rows, use_container_width=True, hide_index=True)
 
+                    # All trips that start at this 'origin_id'
+                    tids = sub["trip_id"].tolist()
+                    dep_rows = gtfs.stop_times[
+                        gtfs.stop_times["trip_id"].isin(tids)
+                        & (gtfs.stop_times["stop_id"].astype(str) == str(origin_id))
+                    ][["trip_id", "departure_time"]].copy()
+
+                    # Join headsign and elapsed time (already computed in `chosen`)
+                    dep_rows = (
+                        dep_rows
+                        .merge(chosen[["trip_id", "trip_headsign", "elapsed_s"]], on="trip_id", how="left")
+                        .sort_values("departure_time")
+                    )
+
+                    # Format convenience cols
+                    dep_rows["Trip time (min)"] = (
+                        pd.to_numeric(dep_rows["elapsed_s"], errors="coerce") // 60
+                    ).astype("Int64")
+                    dep_rows["HH"] = dep_rows["departure_time"].str.slice(0, 2)
+                    dep_rows["MM"] = dep_rows["departure_time"].str.slice(3, 5)
+
+                    # --- Hour → list of "mm (X m) — headsign"
+                    grouped_rows = []
+                    for hh, g in dep_rows.groupby("HH", sort=True):
+                        items = []
+                        for _, r in g.iterrows():
+                            mm = str(r["MM"])
+                            tt = r["Trip time (min)"]
+                            hs = str(r.get("trip_headsign", "") or "")
+                            tag = f"{mm} ({'' if pd.isna(tt) else int(tt)} m)"
+                            items.append(f"{tag}{' — ' + hs if hs else ''}")
+                        grouped_rows.append({"Hour": hh, "Departures": ", ".join(items)})
+
+                    if grouped_rows:
+                        st.dataframe(pd.DataFrame(grouped_rows), use_container_width=True, hide_index=True)
+
+                    # --- Detailed (sortable/filterable) table
+                    ui = dep_rows.rename(
+                        columns={
+                            "departure_time": "Departure",
+                            "trip_headsign": "Headsign",
+                        }
+                    )
+                    ui = ui[["Departure", "Trip time (min)", "Headsign", "trip_id"]]
+                    st.dataframe(ui, use_container_width=True, hide_index=True)
             st.markdown("**Route map**")
             sample = chosen.sort_values("elapsed_s").head(3)["trip_id"].tolist() if len(chosen)>=3 else chosen["trip_id"].tolist()
             seq = gtfs.stop_times[gtfs.stop_times["trip_id"].isin(sample)].sort_values(["trip_id","stop_sequence"])
@@ -2118,7 +2150,7 @@ with tab_sched:
             rcolor = _route_color_lookup(gtfs).get(rid, None)
             col = _hex_to_rgb_list(rcolor) if rcolor else [24, 119, 242]
             st.pydeck_chart(pdk.Deck(
-                map_style=_resolve_map_style(map_style),
+                map_style=map_style,
                 initial_view_state=pdk.ViewState(latitude=coords["lat"].median() if not coords.empty else 0.0,
                                                  longitude=coords["lon"].median() if not coords.empty else 0.0,
                                                  zoom=11),
@@ -2203,7 +2235,7 @@ with tab_sched:
                 edges["color"] = edges["route_id"].map(lambda r: _hex_to_rgb_list(rcolor.get(r, None)) if rcolor else [24,119,242])
                 stops_sel = stops_all[stops_all["stop_id"].astype(str).isin([str(s) for s in sid_list])][["lat","lon"]].copy()
                 st.pydeck_chart(pdk.Deck(
-                    map_style=_resolve_map_style(map_style),
+                    map_style=map_style,
                     initial_view_state=pdk.ViewState(latitude=stops_sel["lat"].mean() if not stops_sel.empty else (stops_all["lat"].median() if not stops_all.empty else 0.0),
                                                      longitude=stops_sel["lon"].mean() if not stops_sel.empty else (stops_all["lon"].median() if not stops_all.empty else 0.0),
                                                      zoom=12),
@@ -2253,7 +2285,7 @@ with tab_net:
         # Stop points
         _stops = stops_all[["lat","lon"]].rename(columns={"lat":"lat","lon":"lon"})
         st.pydeck_chart(pdk.Deck(
-            map_style=_resolve_map_style(map_style),
+            map_style=map_style,
             initial_view_state=pdk.ViewState(latitude=stops_all["lat"].median() if not stops_all.empty else 0.0,
                                              longitude=stops_all["lon"].median() if not stops_all.empty else 0.0,
                                              zoom=11),
@@ -2382,6 +2414,19 @@ with tab_plan:
     edges_df = edges_all[edges_all["route_type"].isin(sel_types_plan)].reset_index(drop=True) if sel_types_plan else edges_all.copy()
     stops_view = stops_all.copy()
     stop_name_lookup = stops_all.set_index('stop_id')['stop_name'].to_dict()
+    # Quick summary of the current planning graph
+    try:
+        _edges_unique = edges_df[["from_stop","to_stop"]].drop_duplicates()
+        _stops_in_graph = int(len(set(edges_df["from_stop"]).union(set(edges_df["to_stop"]))))
+        _edges_count = int(len(_edges_unique))
+        _routes_count = int(gtfs.routes["route_id"].nunique())
+        m1,m2,m3 = st.columns(3)
+        m1.metric("Stops in graph", f"{_stops_in_graph:,}")
+        m2.metric("Unique edges", f"{_edges_count:,}")
+        m3.metric("Routes", f"{_routes_count:,}")
+    except Exception:
+        pass
+    
 
     # Grouping for planning
     group_plan =         st.checkbox("Group stops for planning", value=False, key="plan_group_merge")
@@ -2452,6 +2497,7 @@ with tab_plan:
 
     # ---- Objective & Coverage ----
     st.markdown("### Objective & Coverage")
+    st.caption("Pick what to optimize and any hard coverage constraints. Modes & trimmer narrow the network before planning.")
     obj_choice = st.radio("Optimize coverage for", ["Stops","Edges"], index=0, horizontal=True, key="obj_choice")
     obj_is_stops = (obj_choice == "Stops")
     undirected_edges =         st.checkbox("Treat edges as undirected for counting", value=True, disabled=obj_is_stops, key="plan_undirected")
@@ -2461,6 +2507,7 @@ with tab_plan:
 
     # Search behavior
     st.markdown("### Search behavior")
+    st.caption("Adjust how broadly the planner explores and whether to prefer new coverage over speed.")
     prefer_new =         st.checkbox("Prefer legs that add new coverage (soft preference)", value=True,
                              help="Still allows revisits when needed (enables true backtracking).", key="prefer_new_soft")
     zero_wait_same_route =         st.checkbox("0 connection wait if next leg is same route (selection only)", value=False, key="zero_wait_same_route")
@@ -2469,30 +2516,26 @@ with tab_plan:
 
     # Start time controls
     st.markdown("### Start time / Budget")
-    optimize_time =         st.checkbox("Optimize start time across a window", value=True, key="plan_optimize_time")
+    st.caption("Choose when planning starts and the total time available. Optionally scan a window for the best start.")
+    optimize_time = st.checkbox("Optimize start time across a window", value=True, key="plan_optimize_time")
     if optimize_time:
         c1,c2,c3 = st.columns(3)
-        with c1: win_from_h =         st.number_input("Window start hour", 0, 47, 6, key="plan_win_from")
-        with c2: win_to_h   =         st.number_input("Window end hour", 0, 47, 10, key="plan_win_to")
-        with c3: step_min   =         st.number_input("Step (minutes)", 5, 60, 15, 5, key="plan_step_min")
-
-        # Option to use exact departures instead of fixed step minutes
-        scan_exact_departures =         st.checkbox(
-            "Scan all departures in window (exact)",
-            value=st.session_state.get("plan_scan_departures", True),
-            key="plan_scan_departures",
-            help="Use every scheduled departure observed at the chosen start stops within this window."
-        )
+        with c1:
+            win_from_time = st.time_input("Window start", dt.time(6,0), step=dt.timedelta(minutes=5), key="plan_win_from_time")
+        with c2:
+            win_to_time = st.time_input("Window end", dt.time(10,0), step=dt.timedelta(minutes=5), key="plan_win_to_time")
+        with c3:
+            step_min   = st.number_input("Step (minutes)", 5, 60, 15, 5, key="plan_step_min")
+        # also keep numeric hours in session for backward-compat with any downstream code
+        win_from_h = win_from_time.hour
+        win_to_h = win_to_time.hour
     else:
-        c1,c2 = st.columns(2)
-        with c1: start_time_h =         st.number_input("Start hour", 0, 47, 8, key="plan_start_h")
-        with c2: start_time_m =         st.number_input("Start minute", 0, 59, 0, key="plan_start_m")
-        start_time_s = start_time_h*3600 + start_time_m*60
+        start_time_time = st.time_input("Start time", dt.time(8,0), step=dt.timedelta(minutes=5), key="plan_start_time")
+        start_time_s = start_time_time.hour*3600 + start_time_time.minute*60
 
-    horizon_min =         st.slider("Time budget (minutes)", 60, 24*60, 12*60, 30,
-                            disabled=(require_all_stops or require_all_edges), key="plan_horizon_min")
+    horizon_min = st.slider("Time budget (minutes)", 60, 24*60, 12*60, 30, disabled=(require_all_stops or require_all_edges), key="plan_horizon_min")
 
-    # Build t_list and window info (used for availability-aware smart starts)
+    # Build t_list and window info (used for availability-aware smart starts) (used for availability-aware smart starts)
     if optimize_time:
         t_list=[]; base=int(win_from_h)*3600; end=int(win_to_h)*3600; step=int(step_min)*60; t=base
         while t<=end: t_list.append(int(t)); t+=step
@@ -2506,15 +2549,80 @@ with tab_plan:
     # Coverage selections — required stops (optional)
     with st.expander("Coverage selections", expanded=False):
         if "stop_id" in stops_all.columns and "stop_name" in stops_all.columns:
-            _stop_opts = stops_all[["stop_id","stop_name"]].copy()
+            # --- Base lookup tables
+            _stop_opts = stops_all[["stop_id", "stop_name"]].copy()
             _stop_opts["label"] = _stop_opts["stop_id"].astype(str) + " — " + _stop_opts["stop_name"].astype(str)
-            _sel_labels = st.multiselect("Stops you need to visit (optional)", options=_stop_opts["label"].tolist(), default=[], key="coverage_required_stops")
-            # Save required stop_ids in session_state for planner logic to consume
             _lab2id = dict(zip(_stop_opts["label"], _stop_opts["stop_id"]))
-            st.session_state["coverage_required_stop_ids"] = [ _lab2id.get(lbl) for lbl in _sel_labels ]
+            _id2name = dict(zip(_stop_opts["stop_id"], _stop_opts["stop_name"]))
+
+            st.markdown("**Pick required stops** (you can combine all methods below)")
+
+            # 1) Pick by route(s)
+            present_route_ids = sorted(edges_df["route_id"].dropna().astype(str).unique().tolist())             if "route_id" in edges_df.columns else []
+            routes_in_graph = gtfs.routes[gtfs.routes["route_id"].astype(str).isin(present_route_ids)].copy()
+            fmt_route = lambda r: f"{str(r.get('route_short_name','') or r.get('route_id'))} — {str(r.get('route_long_name','') or '')}"
+
+            col_r1, col_r2 = st.columns([2, 1])
+            with col_r1:
+                sel_routes = st.multiselect(
+                    "Filter stops by route(s)",
+                    options=routes_in_graph.to_dict("records"),
+                    format_func=fmt_route,
+                    default=[]
+                )
+            with col_r2:
+                st.caption("Tip: choose route(s) to narrow the list below.")
+
+            sel_rids = [r["route_id"] for r in sel_routes]
+            if sel_rids and "route_id" in edges_df.columns:
+                route_mask = edges_df["route_id"].astype(str).isin([str(x) for x in sel_rids])
+                cand_stops = set(pd.unique(pd.concat([edges_df.loc[route_mask, "from_stop"],
+                                                      edges_df.loc[route_mask, "to_stop"]], ignore_index=True)))
+            else:
+                cand_stops = set(pd.unique(pd.concat([edges_df["from_stop"], edges_df["to_stop"]], ignore_index=True)))
+
+            # 2) Quick name search (optional)
+            q = st.text_input("Search stop name (optional)", value="", placeholder="Type part of a stop name…")
+            if q.strip():
+                qlow = q.strip().lower()
+                cand_stops = {sid for sid in cand_stops if qlow in str(_id2name.get(sid, "")).lower()}
+
+            # Build filtered label list
+            filtered_labels = [
+                f"{sid} — {_id2name.get(sid, sid)}" for sid in sorted(cand_stops, key=lambda s: str(_id2name.get(s, s)).lower())
+            ]
+
+            # 3) Multiselect the (possibly filtered) candidate stops
+            _sel_labels = st.multiselect(
+                "Stops you need to visit (optional)",
+                options=filtered_labels,
+                default=[],
+                key="coverage_required_stops",
+            )
+
+            # Button: add all filtered candidates
+            if st.button("Add all stops from selected routes / filter"):
+                existing = set(st.session_state.get("coverage_required_stop_ids", []))
+                chosen_ids = []
+                for lbl in filtered_labels:
+                    sid = lbl.split(" — ", 1)[0]
+                    # If the label exists in _lab2id, prefer that mapping; else fallback to the raw sid
+                    mapped = _lab2id.get(lbl)
+                    if mapped is None:
+                        mapped = sid
+                    chosen_ids.append(mapped)
+                chosen_ids = {sid for sid in chosen_ids if sid is not None}
+                st.session_state["coverage_required_stop_ids"] = sorted(list(existing | chosen_ids))
+                st.success(f"Added {len(chosen_ids)} stops to required list")
+
+            # Persist required stop_ids for the planner logic to consume
+            sel_ids = [ _lab2id.get(lbl, lbl.split(" — ", 1)[0]) for lbl in _sel_labels ]
+            existing = set(st.session_state.get("coverage_required_stop_ids", []))
+            st.session_state["coverage_required_stop_ids"] = sorted({sid for sid in (existing | set(sel_ids)) if sid is not None})
         else:
             st.info("Stops table missing 'stop_id' / 'stop_name' columns; cannot select required stops.")
     st.markdown("### Start selection")
+    st.caption("Pick the origin(s) for planning: a single stop, nearby cluster, or multiple choices.")
     startable_ids = set(edges_df["from_stop"].unique()).union(set(edges_df["to_stop"].unique()))
     smart_starts = st.checkbox("Use smart start recommendations (peripheral, Eulerian if needed, availability-aware)", value=True, key="plan_smart_starts")
 
@@ -2547,6 +2655,7 @@ with tab_plan:
     with c3: explore =         st.slider("Exploration (random %)", 0.0, 0.2, 0.01, 0.01, key="plan_explore")
 
     st.markdown("### Backtracking (Beam)")
+    st.caption("Use beam search to keep multiple promising partial plans and escape dead ends.")
     enable_beam =         st.checkbox("Enable backtracking / beam search", value=True, key="plan_enable_beam")
     if enable_beam:
         c1,c2,c3 = st.columns(3)
@@ -3086,7 +3195,7 @@ with tab_plan:
             st.dataframe(pd.DataFrame(leg_rows), use_container_width=True, hide_index=True)
             try:
                 geo_df = pd.DataFrame(georows)
-                st.pydeck_chart(pdk.Deck(map_style=_resolve_map_style(map_style), initial_view_state=pdk.ViewState(latitude=float(stops_snap["lat"].median()) if not stops_snap.empty else 0.0, longitude=float(stops_snap["lon"].median()) if not stops_snap.empty else 0.0, zoom=10), layers=[pdk.Layer("ScatterplotLayer", data=stops_snap.rename(columns={"stop_name":"tooltip"}), get_position="[lon,lat]", get_radius=6, pickable=True), pdk.Layer("LineLayer", data=geo_df, get_source_position="[from_lon,from_lat]", get_target_position="[to_lon,to_lat]", get_width=2, pickable=True)], tooltip={"text":"{tooltip}"} ))
+                st.pydeck_chart(pdk.Deck(map_style=map_style, initial_view_state=pdk.ViewState(latitude=float(stops_snap["lat"].median()) if not stops_snap.empty else 0.0, longitude=float(stops_snap["lon"].median()) if not stops_snap.empty else 0.0, zoom=10), layers=[pdk.Layer("ScatterplotLayer", data=stops_snap.rename(columns={"stop_name":"tooltip"}), get_position="[lon,lat]", get_radius=6, pickable=True), pdk.Layer("LineLayer", data=geo_df, get_source_position="[from_lon,from_lat]", get_target_position="[to_lon,to_lat]", get_width=2, pickable=True)], tooltip={"text":"{tooltip}"} ))
             except Exception as e:
                 st.caption(f"Map preview unavailable: {e}")
             # ---- Export options ----
@@ -3164,7 +3273,7 @@ with tab_plan:
                                       "to_lat": float(b["lat"]), "to_lon": float(b["lon"])})
                     _gdf = _pd.DataFrame(_rows)
                     st.pydeck_chart(pdk.Deck(
-                        map_style=_resolve_map_style(map_style),
+                        map_style=map_style,
                         initial_view_state=pdk.ViewState(latitude=stops_snap["lat"].median() if not stops_snap.empty else 0.0,
                                                          longitude=stops_snap["lon"].median() if not stops_snap.empty else 0.0,
                                                          zoom=11),
