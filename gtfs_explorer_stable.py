@@ -189,7 +189,7 @@ class GTFSData:
 def _zip_bytes_sig(zip_bytes: bytes) -> int:
     return int.from_bytes(hashlib.sha1(zip_bytes).digest()[:4], "big")
 
-@st.cache_data(show_spinner=False)
+@st.cache_resource(show_spinner=False)
 def load_gtfs_from_bytes(zip_bytes: bytes) -> GTFSData:
     """Cached loader: parses GTFS zip bytes."""
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
